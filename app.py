@@ -1,15 +1,9 @@
-# app.py
 import streamlit as st
 import numpy as np
 import random
 import io
-from PIL import Image
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Optional Graphviz Import
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Optional Graphviz
 try:
     from graphviz import Digraph
     GRAPHVIZ_AVAILABLE = True
@@ -49,11 +43,12 @@ for t in terminal_states:
     P_base[t] = {a: {t: 1.0} for a in actions}
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Reward Function
+# Rewards
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 health_reward = {'Healthy':8,'Mild':5,'Moderate':2,'Severe':-3,'Critical':-8,'Recovered':15,'Deceased':-20}
 treatment_cost = {'No_Treatment':0,'Medication':-2,'Surgery':-6}
 risk_penalty = {'No_Treatment':-1,'Medication':-2,'Surgery':-4}
+
 def reward(state, action):
     return health_reward[state] + treatment_cost[action] + risk_penalty[action]
 
@@ -61,6 +56,7 @@ def reward(state, action):
 # Policy Iteration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 gamma = 0.9
+
 def policy_evaluation(policy):
     V = {s:0 for s in health_states}
     while True:
@@ -72,6 +68,7 @@ def policy_evaluation(policy):
             delta = max(delta, abs(v - V[s]))
         if delta < 1e-6: break
     return V
+
 def policy_iteration():
     policy = {s: random.choice(actions) for s in health_states}
     while True:
@@ -83,6 +80,7 @@ def policy_iteration():
             if old != policy[s]: stable = False
         if stable: break
     return policy, V
+
 optimal_policy, V_star = policy_iteration()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -114,85 +112,37 @@ def create_mdp_diagram():
     return dot
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PDF Report
+# Generate TXT report
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def generate_pdf_report_with_diagram(patient_profile, optimal_policy, V_star, diagram_path=None):
+def generate_txt_report(patient_profile, optimal_policy, V_star):
     health, age, comorb = patient_profile
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
-    margin = 50
-    y = height - margin
-    # Title
-    c.setFont("Helvetica-Bold",16)
-    c.drawString(margin,y,"Healthcare Decision Support System")
-    y-=25
-    c.setFont("Helvetica",12)
-    c.drawString(margin,y,"Executive Summary")
-    y-=40
-    # Profile
-    c.setFont("Helvetica-Bold",12)
-    c.drawString(margin,y,"Patient Profile:")
-    y-=20
-    c.setFont("Helvetica",11)
-    for label,value in [("Health State",health),("Age Group",age),("Comorbidity",comorb)]:
-        c.drawString(margin+20,y,f"{label}: {value}")
-        y-=15
-    y-=10
-    # Purpose
-    c.setFont("Helvetica-Bold",12)
-    c.drawString(margin,y,"Purpose:")
-    y-=20
-    c.setFont("Helvetica",11)
-    purpose_text=("This system uses a Markov Decision Process (MDP) to recommend "
-                  "optimal treatment plans under uncertainty, balancing health outcomes, "
-                  "treatment cost, and medical risk.")
-    for line in purpose_text.split(". "):
-        c.drawString(margin+20,y,line.strip())
-        y-=15
-    y-=10
-    # States & Actions
-    c.setFont("Helvetica-Bold",12)
-    c.drawString(margin,y,"States & Actions:")
-    y-=20
-    c.setFont("Helvetica",11)
-    c.drawString(margin+20,y,"Health States: "+", ".join(health_states))
-    y-=15
-    c.drawString(margin+20,y,"Actions: "+", ".join(actions))
-    y-=25
-    # Optimal policy
-    c.setFont("Helvetica-Bold",12)
-    c.drawString(margin,y,"Optimal Policy by State:")
-    y-=20
-    c.setFont("Helvetica",11)
-    for state,action in optimal_policy.items():
-        c.drawString(margin+20,y,f"{state}: {action.replace('_',' ')} (Expected Value: {V_star[state]:.2f})")
-        y-=15
-        if y<250: break
-    # Notes
-    y-=10
-    c.setFont("Helvetica-Bold",12)
-    c.drawString(margin,y,"Notes:")
-    y-=20
-    c.setFont("Helvetica",11)
-    notes_text="- Terminal states: Recovered, Deceased\n- Academic simulation only; does NOT provide medical advice."
-    for line in notes_text.split("\n"):
-        c.drawString(margin+20,y,line.strip())
-        y-=15
-    # Embed diagram if available
-    if diagram_path:
-        try:
-            img = Image.open(diagram_path)
-            img_width,img_height=img.size
-            aspect=img_height/img_width
-            display_width=width-2*margin
-            display_height=display_width*aspect
-            c.drawImage(diagram_path,margin,margin,width=display_width,height=display_height)
-        except:
-            pass
-    c.save()
-    buffer.seek(0)
-    return buffer
+    lines = [
+        "Healthcare Decision Support System",
+        "=================================",
+        "",
+        "Patient Profile:",
+        f"- Health State: {health}",
+        f"- Age Group: {age}",
+        f"- Comorbidity: {comorb}",
+        "",
+        "Purpose:",
+        "This system uses a Markov Decision Process (MDP) to recommend optimal treatment plans under uncertainty, balancing health outcomes, treatment cost, and medical risk.",
+        "",
+        "States & Actions:",
+        f"- Health States: {', '.join(health_states)}",
+        f"- Actions: {', '.join(actions)}",
+        "",
+        "Optimal Policy by State:"
+    ]
+    for state, action in optimal_policy.items():
+        lines.append(f"- {state}: {action.replace('_',' ')} (Expected Value: {V_star[state]:.2f})")
+    lines += [
+        "",
+        "Notes:",
+        "- Terminal states: Recovered, Deceased",
+        "- Academic simulation only; does NOT provide medical advice."
+    ]
+    return "\n".join(lines)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Streamlit UI
@@ -236,16 +186,12 @@ with right:
             diagram_path="/tmp/mdp_diagram.png"
             md.render("/tmp/mdp_diagram", view=False)
             st.image(diagram_path, caption="Healthcare MDP Flow Diagram")
+            st.download_button("Download MDP Diagram (PNG)", data=open(diagram_path,"rb").read(), file_name="mdp_diagram.png", mime="image/png")
         else:
             st.warning("Graphviz not installed. MDP diagram unavailable.")
-        # PDF
-        pdf_buffer=generate_pdf_report_with_diagram((health,age,comorb),optimal_policy,V_star,diagram_path)
-        st.download_button(
-            label="Download Executive Report (PDF with MDP Diagram if available)",
-            data=pdf_buffer,
-            file_name="executive_report.pdf",
-            mime="application/pdf"
-        )
+        # TXT Report
+        txt_report = generate_txt_report((health, age, comorb), optimal_policy, V_star)
+        st.download_button("Download Executive Report (TXT)", data=txt_report, file_name="executive_report.txt", mime="text/plain")
 
 st.markdown("---")
 st.caption("Developed using Markov Decision Processes, Policy Iteration, and Streamlit")
