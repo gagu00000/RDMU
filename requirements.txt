@@ -4,3 +4,4 @@ matplotlib
 networkx
 Pillow
 graphviz 
+reportlab
