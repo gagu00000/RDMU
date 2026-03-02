@@ -147,42 +147,118 @@ def simulate(start_state, steps=5):
     return history
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Streamlit UI
+# Streamlit UI — PROFESSIONAL UX VERSION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-st.set_page_config(page_title="Advanced Healthcare MDP Bot")
-
-st.title("Advanced Healthcare Decision Bot")
-st.markdown("**MDP-based Personalized Treatment Recommendation System**")
-
-st.warning(
-    "This is a decision-support simulation for academic purposes only."
+st.set_page_config(
+    page_title="Healthcare Decision Support System",
+    page_icon="🩺",
+    layout="wide"
 )
 
-health = st.selectbox("Patient Health State", health_states[:-2])
-age = st.selectbox("Age Group", age_groups)
-comorb = st.selectbox("Comorbidity Level", comorbidities)
+# Header
+st.markdown(
+    """
+    <h1 style='text-align:center;'>Healthcare Decision Support System</h1>
+    <p style='text-align:center; color: gray;'>
+    An MDP-based intelligent agent for treatment planning under uncertainty
+    </p>
+    """,
+    unsafe_allow_html=True
+)
 
-if st.button("Get Optimal Treatment Plan"):
-    action = optimal_policy[health]
+st.markdown("---")
 
-    st.success(f"Recommended Treatment: **{action.replace('_', ' ')}**")
+# Disclaimer (important for professor)
+st.info(
+    "This application is an academic decision-support simulation and "
+    "does NOT provide real medical advice."
+)
 
-    st.markdown("### Decision Explanation")
-    st.write(
-        f"""
-        • Decision optimizes **long-term expected outcome**
-        • Considers recovery probability, risk, and cost
-        • Maximizes cumulative reward under uncertainty
-        """
+# Layout
+left, right = st.columns([1.2, 2])
+
+# ────────────────
+# LEFT PANEL — INPUT
+# ────────────────
+with left:
+    st.subheader("Patient Profile")
+
+    health = st.selectbox(
+        "Current Health Condition",
+        health_states[:-2]
     )
 
-    st.markdown("### Expected Long-Term Value")
-    st.write(f"Value of state **{health}**: `{V_star[health]:.2f}`")
+    age = st.selectbox(
+        "Age Group",
+        age_groups
+    )
 
-    st.markdown("### Multi-Step Outcome Simulation")
-    sim = simulate(health)
-    for i, (s, a, s2) in enumerate(sim, 1):
-        st.write(f"Step {i}: {s} → {a.replace('_',' ')} → {s2}")
+    comorb = st.selectbox(
+        "Comorbidity Level",
+        comorbidities
+    )
 
-st.caption("Built using Advanced Markov Decision Processes and Policy Iteration")
+    st.markdown("")
+
+    generate = st.button(
+        "Generate Optimal Treatment Plan",
+        use_container_width=True
+    )
+
+# ────────────────
+# RIGHT PANEL — OUTPUT
+# ────────────────
+with right:
+    if generate:
+        action = optimal_policy[health]
+
+        st.subheader("Recommended Decision")
+
+        st.success(
+            f"**Optimal Treatment:** {action.replace('_', ' ')}"
+        )
+
+        # Metrics
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Health State", health)
+        m2.metric("Selected Action", action.replace("_", " "))
+        m3.metric("Expected Value", f"{V_star[health]:.2f}")
+
+        st.markdown("---")
+
+        # Explanation
+        with st.expander("Why was this treatment chosen?", expanded=True):
+            st.write(
+                """
+                The decision agent evaluates all possible treatment options
+                using a Markov Decision Process and selects the action that
+                maximizes **long-term expected reward**, considering:
+                """
+            )
+            st.markdown(
+                """
+                - Probabilistic health transitions  
+                - Treatment cost and medical risk  
+                - Long-term recovery outcomes  
+                """
+            )
+
+        # Simulation
+        with st.expander("Simulated Patient Trajectory (MDP Rollout)"):
+            sim = simulate(health)
+            for i, (s, a, s2) in enumerate(sim, 1):
+                st.markdown(
+                    f"""
+                    **Step {i}**  
+                    State: `{s}`  
+                    Action: `{a.replace('_',' ')}`  
+                    Outcome: `{s2}`
+                    """
+                )
+
+# Footer
+st.markdown("---")
+st.caption(
+    "Developed using Markov Decision Processes, Policy Iteration, and Streamlit"
+)
