@@ -201,16 +201,98 @@ def simulate(start_state, policy, P, steps=5, seed=42):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def create_mdp_diagram(P):
     dot = Digraph(comment='Healthcare MDP', format='png')
-    dot.attr(rankdir='LR')
+    dot.attr(
+        rankdir='LR',
+        bgcolor='#F8FAFC',
+        pad='0.5',
+        splines='curved',
+        fontname='Helvetica',
+        fontsize='11',
+    )
+
+    # Node color themes per state
+    node_styles = {
+        'Healthy':   {'fillcolor': '#D5F5E3', 'color': '#1E8449', 'fontcolor': '#1E8449'},
+        'Mild':      {'fillcolor': '#FEF9E7', 'color': '#B7950B', 'fontcolor': '#7D6608'},
+        'Moderate':  {'fillcolor': '#FDEBD0', 'color': '#CA6F1E', 'fontcolor': '#784212'},
+        'Severe':    {'fillcolor': '#FADBD8', 'color': '#C0392B', 'fontcolor': '#922B21'},
+        'Critical':  {'fillcolor': '#F9EBEA', 'color': '#922B21', 'fontcolor': '#7B241C'},
+        'Recovered': {'fillcolor': '#D6EAF8', 'color': '#1A5276', 'fontcolor': '#1A5276'},
+        'Deceased':  {'fillcolor': '#D5D8DC', 'color': '#4D5656', 'fontcolor': '#4D5656'},
+    }
+
+    # Edge color per action
+    edge_styles = {
+        'No_Treatment': {'color': '#B7950B', 'style': 'dashed'},
+        'Medication':   {'color': '#2E86C1', 'style': 'solid'},
+        'Surgery':      {'color': '#1E8449', 'style': 'bold'},
+    }
+
+    # Draw nodes
     for state in health_states:
-        dot.node(state, shape='doublecircle' if state in terminal_states else 'circle')
+        style = node_styles[state]
+        shape = 'doublecircle' if state in terminal_states else 'circle'
+        dot.node(
+            state,
+            label=state,
+            shape=shape,
+            style='filled',
+            fillcolor=style['fillcolor'],
+            color=style['color'],
+            fontcolor=style['fontcolor'],
+            fontname='Helvetica-Bold',
+            fontsize='11',
+            width='1.0',
+            penwidth='2',
+        )
+
+    # Draw edges
     seen = set()
     for s in health_states:
         for a in actions:
             for s2, p in P[s][a].items():
                 if p > 0 and (s, s2, a) not in seen:
-                    dot.edge(s, s2, label=f"{a.replace('_', ' ')} ({p:.2f})")
+                    es = edge_styles[a]
+                    dot.edge(
+                        s, s2,
+                        label=f" {a.replace('_', ' ')}\n p={p:.2f}",
+                        color=es['color'],
+                        style=es['style'],
+                        fontcolor=es['color'],
+                        fontname='Helvetica',
+                        fontsize='8',
+                        penwidth='1.5',
+                        arrowsize='0.7',
+                    )
                     seen.add((s, s2, a))
+
+    # Legend subgraph
+    with dot.subgraph(name='cluster_legend') as leg:
+        leg.attr(
+            label='Action Legend',
+            style='filled,rounded',
+            fillcolor='#FFFFFF',
+            color='#AEB6BF',
+            fontname='Helvetica-Bold',
+            fontsize='10',
+            margin='10',
+        )
+        leg.node('leg_none', 'No Treatment',
+                 shape='plaintext', fontcolor='#B7950B',
+                 fontname='Helvetica-Bold', fontsize='9')
+        leg.node('leg_med',  'Medication',
+                 shape='plaintext', fontcolor='#2E86C1',
+                 fontname='Helvetica-Bold', fontsize='9')
+        leg.node('leg_surg', 'Surgery',
+                 shape='plaintext', fontcolor='#1E8449',
+                 fontname='Helvetica-Bold', fontsize='9')
+
+        # Dummy edges styled as legend swatches
+        leg.edge('leg_none', 'leg_med',
+                 style='invis')
+        leg.edge('leg_med',  'leg_surg',
+                 style='invis')
+
     return dot
 
 
