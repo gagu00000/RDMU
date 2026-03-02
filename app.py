@@ -1,8 +1,12 @@
+# app.py
 import streamlit as st
 import numpy as np
 import random
 from graphviz import Digraph
+from PIL import Image
 import io
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # States, Actions, Patient Profile
@@ -139,64 +143,107 @@ def create_mdp_diagram():
     return dot
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Report Generation
+# PDF Report with Diagram
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def generate_report(patient_profile, optimal_policy, V_star):
+def generate_pdf_report_with_diagram(patient_profile, optimal_policy, V_star, diagram_path):
     health, age, comorb = patient_profile
-    report = f"""
-# Healthcare Decision Support System - Executive Summary
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    margin = 50
+    y = height - margin
 
-**Patient Profile:**  
-- Health State: {health}  
-- Age Group: {age}  
-- Comorbidity Level: {comorb}  
+    # Title
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(margin, y, "Healthcare Decision Support System")
+    y -= 25
+    c.setFont("Helvetica", 12)
+    c.drawString(margin, y, "Executive Summary")
+    y -= 40
 
-**Purpose:**  
-This system uses a Markov Decision Process (MDP) to recommend optimal treatment plans under uncertainty, balancing health outcomes, treatment cost, and medical risk.
+    # Patient Profile
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(margin, y, "Patient Profile:")
+    y -= 20
+    c.setFont("Helvetica", 11)
+    for label, value in [("Health State", health), ("Age Group", age), ("Comorbidity", comorb)]:
+        c.drawString(margin + 20, y, f"{label}: {value}")
+        y -= 15
+    y -= 10
 
-**States & Actions:**  
-- Health States: Healthy, Mild, Moderate, Severe, Critical, Recovered, Deceased  
-- Actions: No Treatment, Medication, Surgery  
+    # Purpose
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(margin, y, "Purpose:")
+    y -= 20
+    c.setFont("Helvetica", 11)
+    purpose_text = ("This system uses a Markov Decision Process (MDP) to recommend "
+                    "optimal treatment plans under uncertainty, balancing health outcomes, "
+                    "treatment cost, and medical risk.")
+    for line in purpose_text.split(". "):
+        c.drawString(margin + 20, y, line.strip())
+        y -= 15
+    y -= 10
 
-**Reward Structure:**  
-- Health-based reward, treatment cost, and risk penalties are combined to calculate expected long-term reward.
+    # States & Actions
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(margin, y, "States & Actions:")
+    y -= 20
+    c.setFont("Helvetica", 11)
+    c.drawString(margin + 20, y, "Health States: " + ", ".join(health_states))
+    y -= 15
+    c.drawString(margin + 20, y, "Actions: " + ", ".join(actions))
+    y -= 25
 
-**Optimal Policy (Selected Treatment by State):**  
-"""
+    # Optimal Policy
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(margin, y, "Optimal Policy by State:")
+    y -= 20
+    c.setFont("Helvetica", 11)
     for state, action in optimal_policy.items():
-        report += f"- {state}: {action.replace('_',' ')} (Expected Value: {V_star[state]:.2f})\n"
+        c.drawString(margin + 20, y, f"{state}: {action.replace('_',' ')} (Expected Value: {V_star[state]:.2f})")
+        y -= 15
+        if y < 250:  # reserve space for diagram
+            break
 
-    report += """
+    # Notes
+    y -= 10
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(margin, y, "Notes:")
+    y -= 20
+    c.setFont("Helvetica", 11)
+    notes_text = "- Terminal states: Recovered, Deceased\n- Academic simulation only; does NOT provide medical advice."
+    for line in notes_text.split("\n"):
+        c.drawString(margin + 20, y, line.strip())
+        y -= 15
 
-**MDP Simulation:**  
-The system can simulate patient trajectories probabilistically to show potential outcomes following the optimal policy.
+    # Embed Diagram
+    if diagram_path:
+        try:
+            img = Image.open(diagram_path)
+            img_width, img_height = img.size
+            aspect = img_height / img_width
+            display_width = width - 2*margin
+            display_height = display_width * aspect
+            c.drawImage(diagram_path, margin, margin, width=display_width, height=display_height)
+        except Exception as e:
+            c.setFont("Helvetica", 10)
+            c.drawString(margin, margin, f"Failed to embed diagram: {e}")
 
-**Notes:**  
-- Terminal states: Recovered, Deceased  
-- The system is for academic simulation purposes and does NOT provide medical advice.
-
-"""
-    return report
+    c.save()
+    buffer.seek(0)
+    return buffer
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Streamlit UI
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-st.set_page_config(
-    page_title="Healthcare Decision Support System",
-    page_icon="🩺",
-    layout="wide"
-)
+st.set_page_config(page_title="Healthcare DSS", page_icon="🩺", layout="wide")
 
-# Header
-st.markdown(
-    "<h1 style='text-align:center;'>Healthcare Decision Support System</h1>"
-    "<p style='text-align:center; color: gray;'>An MDP-based intelligent agent for treatment planning under uncertainty</p>",
-    unsafe_allow_html=True
-)
+st.markdown("<h1 style='text-align:center;'>Healthcare Decision Support System</h1>"
+            "<p style='text-align:center; color: gray;'>An MDP-based intelligent agent for treatment planning under uncertainty</p>",
+            unsafe_allow_html=True)
 st.markdown("---")
 st.info("This application is an academic simulation and does NOT provide medical advice.")
 
-# Layout
 left, right = st.columns([1.2, 2])
 with left:
     st.subheader("Patient Profile")
@@ -220,34 +267,32 @@ with right:
         with st.expander("Why was this treatment chosen?", expanded=True):
             st.write(
                 "The decision agent evaluates all possible treatment options using a Markov Decision Process "
-                "and selects the action that maximizes **long-term expected reward**, considering probabilistic transitions, treatment costs, and risks."
+                "and selects the action that maximizes long-term expected reward, considering probabilistic transitions, treatment costs, and risks."
             )
         with st.expander("Simulated Patient Trajectory (MDP Rollout)"):
             sim = simulate(health)
             for i, (s, a, s2) in enumerate(sim, 1):
                 st.markdown(f"**Step {i}**  \nState: `{s}`  \nAction: `{a.replace('_',' ')}`  \nOutcome: `{s2}`")
 
-        # ────────────── Download Executive Report ──────────────
-        report = generate_report((health, age, comorb), optimal_policy, V_star)
-        st.download_button(
-            label="Download Executive Report (Markdown)",
-            data=report.encode('utf-8'),
-            file_name="executive_report.md",
-            mime="text/markdown"
-        )
-
-        # ────────────── MDP Diagram ──────────────
+        # ────────────── Create and Display Diagram ──────────────
         md = create_mdp_diagram()
-        diagram_path = "/tmp/mdp_diagram"
-        md.render(diagram_path, view=False)
-        with open(diagram_path + ".png", "rb") as f:
-            st.download_button(
-                label="Download MDP Diagram",
-                data=f,
-                file_name="mdp_diagram.png",
-                mime="image/png"
-            )
-        st.image(diagram_path + ".png", caption="Healthcare MDP Flow Diagram")
+        diagram_path = "/tmp/mdp_diagram.png"
+        md.render("/tmp/mdp_diagram", view=False)
+        st.image(diagram_path, caption="Healthcare MDP Flow Diagram")
+
+        # ────────────── PDF with Diagram ──────────────
+        pdf_buffer = generate_pdf_report_with_diagram(
+            (health, age, comorb),
+            optimal_policy,
+            V_star,
+            diagram_path
+        )
+        st.download_button(
+            label="Download Executive Report (PDF with MDP Diagram)",
+            data=pdf_buffer,
+            file_name="executive_report.pdf",
+            mime="application/pdf"
+        )
 
 st.markdown("---")
 st.caption("Developed using Markov Decision Processes, Policy Iteration, and Streamlit")
