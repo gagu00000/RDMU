@@ -2,13 +2,8 @@ import streamlit as st
 import numpy as np
 import random
 import io
-
-# Optional Graphviz
-try:
-    from graphviz import Digraph
-    GRAPHVIZ_AVAILABLE = True
-except ImportError:
-    GRAPHVIZ_AVAILABLE = False
+import matplotlib.pyplot as plt
+import networkx as nx
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # States, Actions, Patient Profile
@@ -56,7 +51,6 @@ def reward(state, action):
 # Policy Iteration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 gamma = 0.9
-
 def policy_evaluation(policy):
     V = {s:0 for s in health_states}
     while True:
@@ -99,17 +93,27 @@ def simulate(start_state, steps=5):
     return history
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Optional MDP Diagram
+# Generate MDP Diagram with NetworkX + Matplotlib
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def create_mdp_diagram():
-    if not GRAPHVIZ_AVAILABLE: return None
-    dot = Digraph(comment='Healthcare MDP', format='png')
-    for state in health_states: dot.node(state)
+def generate_mdp_png():
+    G = nx.DiGraph()
     for s in health_states:
+        G.add_node(s)
         for a in actions:
             for s2,p in P_base[s][a].items():
-                if p>0: dot.edge(s, s2, label=f"{a.replace('_',' ')} ({p:.1f})")
-    return dot
+                if p>0:
+                    G.add_edge(s, s2, label=f"{a} ({p:.1f})")
+    pos = nx.spring_layout(G, seed=42)
+    plt.figure(figsize=(10,6))
+    nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=2500, arrowsize=20)
+    edge_labels = nx.get_edge_attributes(G,'label')
+    nx.draw_networkx_edge_labels(G,pos,edge_labels=edge_labels,font_size=8)
+    buf = io.BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format='png')
+    plt.close()
+    buf.seek(0)
+    return buf
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Generate TXT report
@@ -154,44 +158,40 @@ st.markdown("<h1 style='text-align:center;'>Healthcare Decision Support System</
 st.markdown("---")
 st.info("This application is an academic simulation and does NOT provide medical advice.")
 
-left,right=st.columns([1.2,2])
+left,right = st.columns([1.2,2])
 with left:
     st.subheader("Patient Profile")
-    health=st.selectbox("Current Health Condition", health_states[:-2])
-    age=st.selectbox("Age Group", age_groups)
-    comorb=st.selectbox("Comorbidity Level", comorbidities)
-    generate=st.button("Generate Optimal Treatment Plan",use_container_width=True)
+    health = st.selectbox("Current Health Condition", health_states[:-2])
+    age = st.selectbox("Age Group", age_groups)
+    comorb = st.selectbox("Comorbidity Level", comorbidities)
+    generate = st.button("Generate Optimal Treatment Plan", use_container_width=True)
 
 with right:
     if generate:
-        action=optimal_policy[health]
+        action = optimal_policy[health]
         st.subheader("Recommended Decision")
         st.success(f"**Optimal Treatment:** {action.replace('_',' ')}")
-        m1,m2,m3=st.columns(3)
-        m1.metric("Health State",health)
-        m2.metric("Selected Action",action.replace("_"," "))
-        m3.metric("Expected Value",f"{V_star[health]:.2f}")
+        m1,m2,m3 = st.columns(3)
+        m1.metric("Health State", health)
+        m2.metric("Selected Action", action.replace("_"," "))
+        m3.metric("Expected Value", f"{V_star[health]:.2f}")
         st.markdown("---")
         with st.expander("Why was this treatment chosen?", expanded=True):
             st.write("The decision agent evaluates all possible treatment options using a Markov Decision Process "
                      "and selects the action that maximizes long-term expected reward, considering probabilistic transitions, treatment costs, and risks.")
         with st.expander("Simulated Patient Trajectory (MDP Rollout)"):
-            sim=simulate(health)
+            sim = simulate(health)
             for i,(s,a,s2) in enumerate(sim,1):
                 st.markdown(f"**Step {i}**  \nState: `{s}`  \nAction: `{a.replace('_',' ')}`  \nOutcome: `{s2}`")
-        # MDP Diagram
-        diagram_path=None
-        if GRAPHVIZ_AVAILABLE:
-            md=create_mdp_diagram()
-            diagram_path="/tmp/mdp_diagram.png"
-            md.render("/tmp/mdp_diagram", view=False)
-            st.image(diagram_path, caption="Healthcare MDP Flow Diagram")
-            st.download_button("Download MDP Diagram (PNG)", data=open(diagram_path,"rb").read(), file_name="mdp_diagram.png", mime="image/png")
-        else:
-            st.warning("Graphviz not installed. MDP diagram unavailable.")
+
+        # MDP Diagram PNG
+        png_buf = generate_mdp_png()
+        st.image(png_buf, caption="Healthcare MDP Flow Diagram")
+        st.download_button("Download MDP Diagram (PNG)", data=png_buf, file_name="mdp_diagram.png", mime="image/png")
+
         # TXT Report
         txt_report = generate_txt_report((health, age, comorb), optimal_policy, V_star)
         st.download_button("Download Executive Report (TXT)", data=txt_report, file_name="executive_report.txt", mime="text/plain")
 
 st.markdown("---")
-st.caption("Developed using Markov Decision Processes, Policy Iteration, and Streamlit")
+st.caption("Developed using Markov Decision Processes, Policy Iteration, NetworkX, Matplotlib, and Streamlit")
