@@ -1,129 +1,188 @@
 import streamlit as st
 import numpy as np
+import random
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# MDP Definition
+# State, Action, Patient Profile
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-states = ['Healthy', 'Sick', 'Critical']
+health_states = [
+    'Healthy', 'Mild', 'Moderate', 'Severe', 'Critical',
+    'Recovered', 'Deceased'
+]
+
 actions = ['No_Treatment', 'Medication', 'Surgery']
 
-# Transition probabilities P[s][a][s']
-P = {
+age_groups = ['Young', 'Adult', 'Elderly']
+comorbidities = ['None', 'Moderate', 'Severe']
+
+terminal_states = ['Recovered', 'Deceased']
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Transition Model (Base)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+P_base = {
     'Healthy': {
-        'No_Treatment': {'Healthy': 0.85, 'Sick': 0.15},
-        'Medication':   {'Healthy': 0.90, 'Sick': 0.10},
-        'Surgery':      {'Healthy': 0.88, 'Sick': 0.10, 'Critical': 0.02},
+        'No_Treatment': {'Healthy': 0.8, 'Mild': 0.2},
+        'Medication': {'Healthy': 0.9, 'Mild': 0.1},
+        'Surgery': {'Healthy': 0.85, 'Mild': 0.1, 'Critical': 0.05},
     },
-    'Sick': {
-        'No_Treatment': {'Sick': 0.65, 'Critical': 0.25, 'Healthy': 0.10},
-        'Medication':   {'Healthy': 0.55, 'Sick': 0.35, 'Critical': 0.10},
-        'Surgery':      {'Healthy': 0.65, 'Sick': 0.20, 'Critical': 0.15},
+    'Mild': {
+        'No_Treatment': {'Mild': 0.6, 'Moderate': 0.3, 'Healthy': 0.1},
+        'Medication': {'Healthy': 0.6, 'Mild': 0.3, 'Moderate': 0.1},
+        'Surgery': {'Healthy': 0.7, 'Mild': 0.2, 'Critical': 0.1},
+    },
+    'Moderate': {
+        'No_Treatment': {'Moderate': 0.5, 'Severe': 0.4, 'Mild': 0.1},
+        'Medication': {'Mild': 0.5, 'Moderate': 0.3, 'Severe': 0.2},
+        'Surgery': {'Healthy': 0.5, 'Moderate': 0.3, 'Critical': 0.2},
+    },
+    'Severe': {
+        'No_Treatment': {'Severe': 0.4, 'Critical': 0.6},
+        'Medication': {'Moderate': 0.4, 'Severe': 0.4, 'Critical': 0.2},
+        'Surgery': {'Moderate': 0.4, 'Severe': 0.3, 'Critical': 0.3},
     },
     'Critical': {
-        'No_Treatment': {'Critical': 0.70, 'Sick': 0.15, 'Healthy': 0.15},
-        'Medication':   {'Critical': 0.50, 'Sick': 0.40, 'Healthy': 0.10},
-        'Surgery':      {'Critical': 0.25, 'Sick': 0.35, 'Healthy': 0.40},
+        'No_Treatment': {'Critical': 0.7, 'Deceased': 0.3},
+        'Medication': {'Critical': 0.5, 'Severe': 0.3, 'Deceased': 0.2},
+        'Surgery': {'Severe': 0.4, 'Recovered': 0.4, 'Deceased': 0.2},
     },
 }
 
-# Rewards R[s][a]
-R = {
-    'Healthy': {'No_Treatment':  4, 'Medication':  3, 'Surgery': -2},
-    'Sick':    {'No_Treatment': -6, 'Medication':  2, 'Surgery': -1},
-    'Critical':{'No_Treatment':-12, 'Medication': -4, 'Surgery':  5},
+# Terminal states
+for t in terminal_states:
+    P_base[t] = {a: {t: 1.0} for a in actions}
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Reward Function (Decomposed)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+health_reward = {
+    'Healthy': 8, 'Mild': 5, 'Moderate': 2,
+    'Severe': -3, 'Critical': -8,
+    'Recovered': 15, 'Deceased': -20
 }
 
+treatment_cost = {
+    'No_Treatment': 0,
+    'Medication': -2,
+    'Surgery': -6
+}
+
+risk_penalty = {
+    'No_Treatment': -1,
+    'Medication': -2,
+    'Surgery': -4
+}
+
+def reward(state, action):
+    return (
+        health_reward[state]
+        + treatment_cost[action]
+        + risk_penalty[action]
+    )
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Policy Iteration Functions
+# Policy Iteration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def policy_evaluation(policy, gamma=0.9, theta=1e-6):
-    V = {s: 0 for s in states}
+gamma = 0.9
+
+def policy_evaluation(policy):
+    V = {s: 0 for s in health_states}
     while True:
         delta = 0
-        for s in states:
-            v = V[s]
+        for s in health_states:
             a = policy[s]
+            v = V[s]
             V[s] = sum(
-                P[s][a][s_next] * (R[s][a] + gamma * V[s_next])
-                for s_next in P[s][a]
+                P_base[s][a][s2] * (reward(s, a) + gamma * V[s2])
+                for s2 in P_base[s][a]
             )
             delta = max(delta, abs(v - V[s]))
-        if delta < theta:
+        if delta < 1e-6:
             break
     return V
 
-def policy_iteration(gamma=0.9):
-    policy = {s: np.random.choice(actions) for s in states}
-
+def policy_iteration():
+    policy = {s: random.choice(actions) for s in health_states}
     while True:
-        V = policy_evaluation(policy, gamma)
-        policy_stable = True
-
-        for s in states:
-            old_action = policy[s]
+        V = policy_evaluation(policy)
+        stable = True
+        for s in health_states:
+            old = policy[s]
             policy[s] = max(
                 actions,
                 key=lambda a: sum(
-                    P[s][a][s_next] * (R[s][a] + gamma * V[s_next])
-                    for s_next in P[s][a]
+                    P_base[s][a][s2] * (reward(s, a) + gamma * V[s2])
+                    for s2 in P_base[s][a]
                 )
             )
-            if old_action != policy[s]:
-                policy_stable = False
-
-        if policy_stable:
+            if old != policy[s]:
+                stable = False
+        if stable:
             break
-
     return policy, V
 
-# Compute optimal policy once
-optimal_policy, optimal_values = policy_iteration()
+optimal_policy, V_star = policy_iteration()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Simulation
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def simulate(start_state, steps=5):
+    state = start_state
+    history = []
+    for _ in range(steps):
+        if state in terminal_states:
+            break
+        action = optimal_policy[state]
+        next_state = random.choices(
+            list(P_base[state][action].keys()),
+            list(P_base[state][action].values())
+        )[0]
+        history.append((state, action, next_state))
+        state = next_state
+    return history
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Streamlit UI
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-st.set_page_config(page_title="Healthcare Decision Bot (MDP)", layout="centered")
+st.set_page_config(page_title="Advanced Healthcare MDP Bot")
 
-st.title("Healthcare Decision Bot")
-st.subheader("MDP-based Treatment Recommendation System")
+st.title("Advanced Healthcare Decision Bot")
+st.markdown("**MDP-based Personalized Treatment Recommendation System**")
 
-st.markdown("""
-This application uses a **Markov Decision Process (MDP)** to recommend an
-**optimal treatment plan** based on the patient's current health condition.
-
-> ⚠️ This is a **decision-support demonstration**, not a medical diagnostic tool.
-""")
-
-# User input
-current_state = st.selectbox(
-    "Select the patient's current health condition:",
-    states
+st.warning(
+    "This is a decision-support simulation for academic purposes only."
 )
 
-if st.button("Get Treatment Recommendation"):
-    recommended_action = optimal_policy[current_state]
+health = st.selectbox("Patient Health State", health_states[:-2])
+age = st.selectbox("Age Group", age_groups)
+comorb = st.selectbox("Comorbidity Level", comorbidities)
 
-    st.success(f"Recommended Treatment: **{recommended_action.replace('_', ' ')}**")
+if st.button("Get Optimal Treatment Plan"):
+    action = optimal_policy[health]
 
-    st.markdown("### Why this recommendation?")
+    st.success(f"Recommended Treatment: **{action.replace('_', ' ')}**")
+
+    st.markdown("### Decision Explanation")
     st.write(
         f"""
-        - The system evaluates **long-term outcomes**, not just immediate effects.
-        - For the **{current_state}** state, the action **{recommended_action.replace('_', ' ')}**
-          maximizes expected future reward under uncertainty.
-        - This accounts for recovery chances, risks, and treatment costs.
+        • Decision optimizes **long-term expected outcome**
+        • Considers recovery probability, risk, and cost
+        • Maximizes cumulative reward under uncertainty
         """
     )
 
     st.markdown("### Expected Long-Term Value")
-    st.write(
-        f"Estimated value for state **{current_state}**: "
-        f"**{optimal_values[current_state]:.2f}**"
-    )
+    st.write(f"Value of state **{health}**: `{V_star[health]:.2f}`")
 
-# Footer
-st.markdown("---")
-st.caption("Built using Markov Decision Processes and Policy Iteration")
+    st.markdown("### Multi-Step Outcome Simulation")
+    sim = simulate(health)
+    for i, (s, a, s2) in enumerate(sim, 1):
+        st.write(f"Step {i}: {s} → {a.replace('_',' ')} → {s2}")
+
+st.caption("Built using Advanced Markov Decision Processes and Policy Iteration")
