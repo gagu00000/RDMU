@@ -126,4 +126,4 @@ if st.button("Get Treatment Recommendation"):
 
 # Footer
 st.markdown("---")
-st.caption("Built using Markov Decision Processes and Policy Iteration")s
+st.caption("Built using Markov Decision Processes and Policy Iteration")
