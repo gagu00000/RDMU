@@ -202,99 +202,141 @@ def simulate(start_state, policy, P, steps=5, seed=42):
 def create_mdp_diagram(P):
     dot = Digraph(comment='Healthcare MDP', format='png')
     dot.attr(
-        rankdir='LR',
-        bgcolor='#F8FAFC',
-        pad='0.5',
-        splines='curved',
+        engine='dot',
+        rankdir='TB',
+        bgcolor='#FFFFFF',
+        pad='0.8',
+        nodesep='0.8',
+        ranksep='1.2',
+        splines='ortho',
         fontname='Helvetica',
-        fontsize='11',
+        dpi='180',
     )
 
-    # Node color themes per state
+    # ── Node styles ──────────────────────────────────────────────────────────
     node_styles = {
-        'Healthy':   {'fillcolor': '#D5F5E3', 'color': '#1E8449', 'fontcolor': '#1E8449'},
-        'Mild':      {'fillcolor': '#FEF9E7', 'color': '#B7950B', 'fontcolor': '#7D6608'},
-        'Moderate':  {'fillcolor': '#FDEBD0', 'color': '#CA6F1E', 'fontcolor': '#784212'},
-        'Severe':    {'fillcolor': '#FADBD8', 'color': '#C0392B', 'fontcolor': '#922B21'},
-        'Critical':  {'fillcolor': '#F9EBEA', 'color': '#922B21', 'fontcolor': '#7B241C'},
-        'Recovered': {'fillcolor': '#D6EAF8', 'color': '#1A5276', 'fontcolor': '#1A5276'},
-        'Deceased':  {'fillcolor': '#D5D8DC', 'color': '#4D5656', 'fontcolor': '#4D5656'},
+        'Healthy':   {'fillcolor': '#E8F8F5', 'color': '#1E8449', 'fontcolor': '#1E8449'},
+        'Mild':      {'fillcolor': '#FEF9E7', 'color': '#D4AC0D', 'fontcolor': '#9A7D0A'},
+        'Moderate':  {'fillcolor': '#FEF0E6', 'color': '#E67E22', 'fontcolor': '#A04000'},
+        'Severe':    {'fillcolor': '#FDEDEC', 'color': '#E74C3C', 'fontcolor': '#C0392B'},
+        'Critical':  {'fillcolor': '#F9EBEA', 'color': '#C0392B', 'fontcolor': '#922B21'},
+        'Recovered': {'fillcolor': '#EBF5FB', 'color': '#2E86C1', 'fontcolor': '#1A5276'},
+        'Deceased':  {'fillcolor': '#F2F3F4', 'color': '#808B96', 'fontcolor': '#566573'},
     }
 
-    # Edge color per action
-    edge_styles = {
-        'No_Treatment': {'color': '#B7950B', 'style': 'dashed'},
-        'Medication':   {'color': '#2E86C1', 'style': 'solid'},
-        'Surgery':      {'color': '#1E8449', 'style': 'bold'},
-    }
+    # ── Rank groupings for clean top-to-bottom flow ──────────────────────────
+    with dot.subgraph() as s:
+        s.attr(rank='same')
+        s.node('Healthy')
 
-    # Draw nodes
+    with dot.subgraph() as s:
+        s.attr(rank='same')
+        s.node('Mild')
+
+    with dot.subgraph() as s:
+        s.attr(rank='same')
+        s.node('Moderate')
+
+    with dot.subgraph() as s:
+        s.attr(rank='same')
+        s.node('Severe')
+
+    with dot.subgraph() as s:
+        s.attr(rank='same')
+        s.node('Critical')
+
+    with dot.subgraph() as s:
+        s.attr(rank='same')
+        s.node('Recovered')
+        s.node('Deceased')
+
+    # ── Draw nodes ───────────────────────────────────────────────────────────
     for state in health_states:
-        style = node_styles[state]
-        shape = 'doublecircle' if state in terminal_states else 'circle'
+        st = node_styles[state]
+        is_terminal = state in terminal_states
         dot.node(
             state,
             label=state,
-            shape=shape,
+            shape='doublecircle' if is_terminal else 'circle',
             style='filled',
-            fillcolor=style['fillcolor'],
-            color=style['color'],
-            fontcolor=style['fontcolor'],
+            fillcolor=st['fillcolor'],
+            color=st['color'],
+            fontcolor=st['fontcolor'],
             fontname='Helvetica-Bold',
-            fontsize='11',
-            width='1.0',
-            penwidth='2',
+            fontsize='13',
+            width='1.2',
+            height='1.2',
+            fixedsize='true',
+            penwidth='2.5' if is_terminal else '2.0',
         )
 
-    # Draw edges
-    seen = set()
+    # ── Aggregate edges: combine all actions into one label per (s→s2) ───────
+    # Build: edge_map[(s, s2)] = list of (action, prob)
+    edge_map = {}
     for s in health_states:
         for a in actions:
             for s2, p in P[s][a].items():
-                if p > 0 and (s, s2, a) not in seen:
-                    es = edge_styles[a]
-                    dot.edge(
-                        s, s2,
-                        label=f" {a.replace('_', ' ')}\n p={p:.2f}",
-                        color=es['color'],
-                        style=es['style'],
-                        fontcolor=es['color'],
-                        fontname='Helvetica',
-                        fontsize='8',
-                        penwidth='1.5',
-                        arrowsize='0.7',
-                    )
-                    seen.add((s, s2, a))
+                if p > 0:
+                    key = (s, s2)
+                    if key not in edge_map:
+                        edge_map[key] = []
+                    edge_map[key].append((a, p))
 
-    # Legend subgraph
+    # Action abbreviations and colors
+    action_abbr  = {'No_Treatment': 'NT', 'Medication': 'Med', 'Surgery': 'Sur'}
+    action_color = {'No_Treatment': '#E67E22', 'Medication': '#2980B9', 'Surgery': '#27AE60'}
+
+    # Draw one edge per (s→s2) with a clean multi-line label
+    for (s, s2), entries in edge_map.items():
+        # Pick dominant color = action with highest prob
+        dominant_action = max(entries, key=lambda x: x[1])[0]
+        edge_col = action_color[dominant_action]
+
+        # Build compact label: "NT:0.30  Med:0.20"
+        label_parts = [f"{action_abbr[a]}: {p:.2f}" for a, p in sorted(entries, key=lambda x: x[1], reverse=True)]
+        label = "\n".join(label_parts)
+
+        # Self-loops get a special style
+        is_self = (s == s2)
+
+        dot.edge(
+            s, s2,
+            label=f" {label} ",
+            color=edge_col,
+            fontcolor='#2C3E50',
+            fontname='Helvetica',
+            fontsize='8',
+            penwidth='1.8' if not is_self else '1.2',
+            arrowsize='0.6',
+            style='solid' if not is_self else 'dashed',
+            constraint='true' if not is_self else 'false',
+        )
+
+    # ── Legend ───────────────────────────────────────────────────────────────
     with dot.subgraph(name='cluster_legend') as leg:
         leg.attr(
-            label='Action Legend',
+            label='  Edge Label Key  ',
             style='filled,rounded',
-            fillcolor='#FFFFFF',
-            color='#AEB6BF',
+            fillcolor='#F8F9FA',
+            color='#BDC3C7',
             fontname='Helvetica-Bold',
             fontsize='10',
-            margin='10',
+            margin='12',
+            rank='sink',
         )
-        leg.node('leg_none', 'No Treatment',
-                 shape='plaintext', fontcolor='#B7950B',
-                 fontname='Helvetica-Bold', fontsize='9')
-        leg.node('leg_med',  'Medication',
-                 shape='plaintext', fontcolor='#2E86C1',
-                 fontname='Helvetica-Bold', fontsize='9')
-        leg.node('leg_surg', 'Surgery',
-                 shape='plaintext', fontcolor='#1E8449',
-                 fontname='Helvetica-Bold', fontsize='9')
-
-        # Dummy edges styled as legend swatches
-        leg.edge('leg_none', 'leg_med',
-                 style='invis')
-        leg.edge('leg_med',  'leg_surg',
-                 style='invis')
+        leg.node('l1', 'NT = No Treatment',
+                 shape='plaintext', fontcolor='#E67E22',
+                 fontname='Helvetica', fontsize='9')
+        leg.node('l2', 'Med = Medication',
+                 shape='plaintext', fontcolor='#2980B9',
+                 fontname='Helvetica', fontsize='9')
+        leg.node('l3', 'Sur = Surgery',
+                 shape='plaintext', fontcolor='#27AE60',
+                 fontname='Helvetica', fontsize='9')
+        leg.edge('l1', 'l2', style='invis')
+        leg.edge('l2', 'l3', style='invis')
 
     return dot
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # PDF Helpers
