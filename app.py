@@ -11,22 +11,27 @@ from reportlab.platypus import Table, TableStyle
 from datetime import date
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Config / Constants
+# Constants
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-health_states = [
-    'Healthy', 'Mild', 'Moderate', 'Severe', 'Critical',
-    'Recovered', 'Deceased'
-]
+health_states     = ['Healthy', 'Mild', 'Moderate', 'Severe', 'Critical', 'Recovered', 'Deceased']
 non_terminal_states = health_states[:-2]
-actions = ['No_Treatment', 'Medication', 'Surgery']
-age_groups = ['Young', 'Adult', 'Elderly']
-comorbidities = ['None', 'Moderate', 'Severe']
-terminal_states = ['Recovered', 'Deceased']
-gamma = 0.9
-MAX_EVAL_ITERS = 1000
+terminal_states   = ['Recovered', 'Deceased']
+actions           = ['No_Treatment', 'Medication', 'Surgery']
+age_groups        = ['Young', 'Adult', 'Elderly']
+comorbidities     = ['None', 'Moderate', 'Severe']
+
+# Fix #14: γ raised to 0.95; terminal values computed as one-time reward (no self-loop inflation)
+gamma         = 0.95
+MAX_EVAL_ITERS = 2000
+
+# State desirability index used for penalty targeting (Fix #15)
+STATE_VALUE = {
+    'Healthy': 6, 'Mild': 5, 'Moderate': 4, 'Severe': 3,
+    'Critical': 2, 'Recovered': 7, 'Deceased': 0
+}
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Colour Palette
+# Colour Palette (PDF)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 C_PRIMARY = colors.HexColor("#1A3557")
 C_ACCENT  = colors.HexColor("#2E86C1")
@@ -45,7 +50,7 @@ action_row_colors = {
 }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Patient Profile Dataclass
+# Patient Profile
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dataclass
 class PatientProfile:
@@ -54,88 +59,110 @@ class PatientProfile:
     comorbidity: str
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Transition Model
+# Base Transition Model
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 P_base = {
     'Healthy': {
-        'No_Treatment': {'Healthy': 0.8, 'Mild': 0.2},
-        'Medication':   {'Healthy': 0.9, 'Mild': 0.1},
+        'No_Treatment': {'Healthy': 0.8,  'Mild': 0.2},
+        'Medication':   {'Healthy': 0.9,  'Mild': 0.1},
         'Surgery':      {'Healthy': 0.85, 'Mild': 0.1, 'Critical': 0.05},
     },
     'Mild': {
-        'No_Treatment': {'Mild': 0.6, 'Moderate': 0.3, 'Healthy': 0.1},
-        'Medication':   {'Healthy': 0.6, 'Mild': 0.3, 'Moderate': 0.1},
-        'Surgery':      {'Healthy': 0.7, 'Mild': 0.2, 'Critical': 0.1},
+        'No_Treatment': {'Mild': 0.6,    'Moderate': 0.3, 'Healthy': 0.1},
+        'Medication':   {'Healthy': 0.6, 'Mild': 0.3,    'Moderate': 0.1},
+        'Surgery':      {'Healthy': 0.7, 'Mild': 0.2,    'Critical': 0.1},
     },
     'Moderate': {
-        'No_Treatment': {'Moderate': 0.5, 'Severe': 0.4, 'Mild': 0.1},
-        'Medication':   {'Mild': 0.5, 'Moderate': 0.3, 'Severe': 0.2},
-        'Surgery':      {'Healthy': 0.5, 'Moderate': 0.3, 'Critical': 0.2},
+        'No_Treatment': {'Moderate': 0.5, 'Severe': 0.4,   'Mild': 0.1},
+        'Medication':   {'Mild': 0.5,     'Moderate': 0.3, 'Severe': 0.2},
+        'Surgery':      {'Healthy': 0.5,  'Moderate': 0.3, 'Critical': 0.2},
     },
     'Severe': {
-        'No_Treatment': {'Severe': 0.4, 'Critical': 0.6},
-        'Medication':   {'Moderate': 0.4, 'Severe': 0.4, 'Critical': 0.2},
-        'Surgery':      {'Moderate': 0.4, 'Severe': 0.3, 'Critical': 0.3},
+        'No_Treatment': {'Severe': 0.4,    'Critical': 0.6},
+        'Medication':   {'Moderate': 0.4,  'Severe': 0.4,  'Critical': 0.2},
+        'Surgery':      {'Moderate': 0.4,  'Severe': 0.3,  'Critical': 0.3},
     },
     'Critical': {
-        'No_Treatment': {'Critical': 0.7, 'Deceased': 0.3},
-        'Medication':   {'Critical': 0.5, 'Severe': 0.3, 'Deceased': 0.2},
-        'Surgery':      {'Severe': 0.4, 'Recovered': 0.4, 'Deceased': 0.2},
+        'No_Treatment': {'Critical': 0.7,  'Deceased': 0.3},
+        'Medication':   {'Critical': 0.5,  'Severe': 0.3,    'Deceased': 0.2},
+        'Surgery':      {'Severe': 0.4,    'Recovered': 0.4, 'Deceased': 0.2},
     },
 }
+# Terminal states self-loop (absorbing)
 for t in terminal_states:
     P_base[t] = {a: {t: 1.0} for a in actions}
 
 
-def _normalize(dist):
+def _normalize(dist: dict) -> dict:
     total = sum(dist.values())
-    return {k: v / total for k, v in dist.items()} if total > 0 else dist
+    if total <= 0:
+        raise ValueError(f"Zero-sum distribution — check transition logic: {dist}")
+    return {k: v / total for k, v in dist.items()}
 
 
-def build_transitions(profile):
+def build_transitions(profile: PatientProfile) -> dict:
+    """
+    Personalise transition probabilities for age and comorbidity.
+    Penalty shifts probability away from the BEST outcome state
+    (Fix #15: using STATE_VALUE so Recovered is correctly penalised too).
+    """
     age_penalty    = {'Young': 0.0, 'Adult': 0.05, 'Elderly': 0.12}
-    comorb_penalty = {'None': 0.0, 'Moderate': 0.06, 'Severe': 0.14}
+    comorb_penalty = {'None':  0.0, 'Moderate': 0.06, 'Severe': 0.14}
     total_penalty  = age_penalty[profile.age] + comorb_penalty[profile.comorbidity]
+
     worse_of = {
         'Healthy': 'Mild', 'Mild': 'Moderate', 'Moderate': 'Severe',
         'Severe': 'Critical', 'Critical': 'Deceased'
     }
+
     P_patient = {}
     for state in health_states:
         P_patient[state] = {}
         for action in actions:
             dist = dict(P_base[state][action])
+
             if state in terminal_states or total_penalty == 0:
                 P_patient[state][action] = dist
                 continue
+
+            # Fix #15: pick best outcome by STATE_VALUE (includes Recovered)
+            best = max(dist.keys(), key=lambda s: STATE_VALUE[s])
             worse = worse_of.get(state)
-            if worse:
-                best = max(dist, key=lambda s: health_states.index(s) if s not in terminal_states else -1)
+
+            if worse and best:
                 shift = min(total_penalty, dist.get(best, 0) * 0.8)
                 dist[best]  = dist.get(best, 0) - shift
+                # If the worse state isn't already in dist, add it
                 dist[worse] = dist.get(worse, 0) + shift
+
             dist = {k: max(v, 0) for k, v in dist.items() if max(v, 0) > 0}
             P_patient[state][action] = _normalize(dist)
+
     return P_patient
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Reward Function
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-health_reward  = {
+health_reward = {
     'Healthy': 8, 'Mild': 5, 'Moderate': 2,
     'Severe': -3, 'Critical': -8,
     'Recovered': 15, 'Deceased': -20
 }
+# Fix #13: No_Treatment penalty removed (progression risk already in transitions)
 treatment_cost = {'No_Treatment': 0, 'Medication': -2, 'Surgery': -6}
-risk_penalty   = {'No_Treatment': -1, 'Medication': -2, 'Surgery': -4}
-surgery_risk   = {
+risk_penalty   = {'No_Treatment': 0, 'Medication': -2, 'Surgery': -4}
+
+surgery_risk = {
     'age':        {'Young': 0, 'Adult': -1, 'Elderly': -3},
-    'comorbidity':{'None': 0, 'Moderate': -1, 'Severe': -3},
+    'comorbidity':{'None': 0,  'Moderate': -1, 'Severe': -3},
 }
 
 
-def reward(state, action, profile):
+def reward(state: str, action: str, profile: PatientProfile) -> float:
+    # Fix #12: terminal states return health reward only — no treatment costs
+    if state in terminal_states:
+        return health_reward[state]
     base = health_reward[state] + treatment_cost[action] + risk_penalty[action]
     if action == 'Surgery':
         base += surgery_risk['age'][profile.age]
@@ -144,32 +171,53 @@ def reward(state, action, profile):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Policy Iteration
+# Policy Evaluation & Iteration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def policy_evaluation(policy, P, profile):
+def policy_evaluation(policy: dict, P: dict, profile: PatientProfile) -> dict:
     V = {s: 0.0 for s in health_states}
+
+    # Fix #2: Seed terminal state values analytically (no self-loop drift)
+    for t in terminal_states:
+        V[t] = reward(t, policy[t], profile) / (1 - gamma)
+
     for _ in range(MAX_EVAL_ITERS):
         delta = 0.0
         for s in health_states:
+            if s in terminal_states:
+                continue  # Fix #2: skip terminal — already set analytically
             a = policy[s]
             v = V[s]
-            V[s] = sum(p * (reward(s, a, profile) + gamma * V[s2]) for s2, p in P[s][a].items())
+            V[s] = sum(
+                p * (reward(s, a, profile) + gamma * V[s2])
+                for s2, p in P[s][a].items()
+            )
             delta = max(delta, abs(v - V[s]))
-        if delta < 1e-6:
+        if delta < 1e-8:
             break
     return V
 
 
-def policy_iteration(profile):
+def policy_iteration(profile: PatientProfile):
     P = build_transitions(profile)
-    policy = {s: random.choice(actions) for s in health_states}
+
+    # Fix #1: deterministic initial policy
+    policy = {s: 'No_Treatment' for s in health_states}
+
     for _ in range(500):
         V = policy_evaluation(policy, P, profile)
         stable = True
         for s in health_states:
+            if s in terminal_states:
+                continue
             old = policy[s]
-            policy[s] = max(actions, key=lambda a: sum(
-                p * (reward(s, a, profile) + gamma * V[s2]) for s2, p in P[s][a].items()))
+            # Fix #3: renamed lambda param to `act` to avoid shadowing
+            policy[s] = max(
+                actions,
+                key=lambda act: sum(
+                    p * (reward(s, act, profile) + gamma * V[s2])
+                    for s2, p in P[s][act].items()
+                )
+            )
             if old != policy[s]:
                 stable = False
         if stable:
@@ -180,7 +228,7 @@ def policy_iteration(profile):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Simulation
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def simulate(start_state, policy, P, steps=5, seed=42):
+def simulate(start_state: str, policy: dict, P: dict, steps: int = 5, seed: int = 42):
     random.seed(seed)
     state, history = start_state, []
     for _ in range(steps):
@@ -199,7 +247,7 @@ def simulate(start_state, policy, P, steps=5, seed=42):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MDP Diagram
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def create_mdp_diagram(P):
+def create_mdp_diagram(P: dict) -> Digraph:
     dot = Digraph(comment='Healthcare MDP', format='png')
     dot.attr(
         engine='dot',
@@ -213,7 +261,6 @@ def create_mdp_diagram(P):
         dpi='180',
     )
 
-    # ── Node styles ──────────────────────────────────────────────────────────
     node_styles = {
         'Healthy':   {'fillcolor': '#E8F8F5', 'color': '#1E8449', 'fontcolor': '#1E8449'},
         'Mild':      {'fillcolor': '#FEF9E7', 'color': '#D4AC0D', 'fontcolor': '#9A7D0A'},
@@ -224,33 +271,20 @@ def create_mdp_diagram(P):
         'Deceased':  {'fillcolor': '#F2F3F4', 'color': '#808B96', 'fontcolor': '#566573'},
     }
 
-    # ── Rank groupings for clean top-to-bottom flow ──────────────────────────
-    with dot.subgraph() as s:
-        s.attr(rank='same')
-        s.node('Healthy')
+    rank_groups = [
+        ['Healthy'],
+        ['Mild'],
+        ['Moderate'],
+        ['Severe'],
+        ['Critical'],
+        ['Recovered', 'Deceased'],
+    ]
+    for group in rank_groups:
+        with dot.subgraph() as s:
+            s.attr(rank='same')
+            for node in group:
+                s.node(node)
 
-    with dot.subgraph() as s:
-        s.attr(rank='same')
-        s.node('Mild')
-
-    with dot.subgraph() as s:
-        s.attr(rank='same')
-        s.node('Moderate')
-
-    with dot.subgraph() as s:
-        s.attr(rank='same')
-        s.node('Severe')
-
-    with dot.subgraph() as s:
-        s.attr(rank='same')
-        s.node('Critical')
-
-    with dot.subgraph() as s:
-        s.attr(rank='same')
-        s.node('Recovered')
-        s.node('Deceased')
-
-    # ── Draw nodes ───────────────────────────────────────────────────────────
     for state in health_states:
         st = node_styles[state]
         is_terminal = state in terminal_states
@@ -270,35 +304,25 @@ def create_mdp_diagram(P):
             penwidth='2.5' if is_terminal else '2.0',
         )
 
-    # ── Aggregate edges: combine all actions into one label per (s→s2) ───────
-    # Build: edge_map[(s, s2)] = list of (action, prob)
-    edge_map = {}
+    # Aggregate all actions into one edge per (s→s2)
+    edge_map: dict = {}
     for s in health_states:
         for a in actions:
             for s2, p in P[s][a].items():
                 if p > 0:
-                    key = (s, s2)
-                    if key not in edge_map:
-                        edge_map[key] = []
-                    edge_map[key].append((a, p))
+                    edge_map.setdefault((s, s2), []).append((a, p))
 
-    # Action abbreviations and colors
     action_abbr  = {'No_Treatment': 'NT', 'Medication': 'Med', 'Surgery': 'Sur'}
     action_color = {'No_Treatment': '#E67E22', 'Medication': '#2980B9', 'Surgery': '#27AE60'}
 
-    # Draw one edge per (s→s2) with a clean multi-line label
     for (s, s2), entries in edge_map.items():
-        # Pick dominant color = action with highest prob
-        dominant_action = max(entries, key=lambda x: x[1])[0]
-        edge_col = action_color[dominant_action]
-
-        # Build compact label: "NT:0.30  Med:0.20"
-        label_parts = [f"{action_abbr[a]}: {p:.2f}" for a, p in sorted(entries, key=lambda x: x[1], reverse=True)]
-        label = "\n".join(label_parts)
-
-        # Self-loops get a special style
+        dominant = max(entries, key=lambda x: x[1])[0]
+        edge_col = action_color[dominant]
+        label    = "\n".join(
+            f"{action_abbr[a]}: {p:.2f}"
+            for a, p in sorted(entries, key=lambda x: x[1], reverse=True)
+        )
         is_self = (s == s2)
-
         dot.edge(
             s, s2,
             label=f" {label} ",
@@ -312,7 +336,6 @@ def create_mdp_diagram(P):
             constraint='true' if not is_self else 'false',
         )
 
-    # ── Legend ───────────────────────────────────────────────────────────────
     with dot.subgraph(name='cluster_legend') as leg:
         leg.attr(
             label='  Edge Label Key  ',
@@ -324,25 +347,23 @@ def create_mdp_diagram(P):
             margin='12',
             rank='sink',
         )
-        leg.node('l1', 'NT = No Treatment',
-                 shape='plaintext', fontcolor='#E67E22',
-                 fontname='Helvetica', fontsize='9')
-        leg.node('l2', 'Med = Medication',
-                 shape='plaintext', fontcolor='#2980B9',
-                 fontname='Helvetica', fontsize='9')
-        leg.node('l3', 'Sur = Surgery',
-                 shape='plaintext', fontcolor='#27AE60',
-                 fontname='Helvetica', fontsize='9')
+        for key, label, fc in [
+            ('l1', 'NT = No Treatment', '#E67E22'),
+            ('l2', 'Med = Medication',  '#2980B9'),
+            ('l3', 'Sur = Surgery',     '#27AE60'),
+        ]:
+            leg.node(key, label, shape='plaintext', fontcolor=fc,
+                     fontname='Helvetica', fontsize='9')
         leg.edge('l1', 'l2', style='invis')
         leg.edge('l2', 'l3', style='invis')
 
     return dot
 
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # PDF Helpers
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def _new_page(c, width, height):
-    """Paint a solid white background — must be called after every showPage()."""
     c.setFillColor(C_WHITE)
     c.rect(0, 0, width, height, fill=1, stroke=0)
 
@@ -355,7 +376,6 @@ def _draw_footer(c, page_num, width, margin):
     c.setFillColor(C_MUTED)
     c.drawString(margin, 28, "Healthcare Decision Support System  |  Confidential – Academic Simulation Only")
     c.drawRightString(width - margin, 28, f"Page {page_num}")
-    # ← reset fill so next element is not grey
     c.setFillColor(colors.black)
 
 
@@ -366,7 +386,7 @@ def _section_header(c, text, y, width, margin):
     c.setStrokeColor(C_ACCENT)
     c.setLineWidth(1.5)
     c.line(margin, y - 4, width - margin, y - 4)
-    c.setFillColor(colors.black)  # reset after header
+    c.setFillColor(colors.black)
     return y - 22
 
 
@@ -377,12 +397,11 @@ def _badge(c, text, x, y, color):
     c.setFillColor(C_WHITE)
     c.setFont("Helvetica-Bold", 9)
     c.drawString(x + 6, y + 2, text)
-    c.setFillColor(colors.black)  # reset after badge
+    c.setFillColor(colors.black)
     return x + w + 6
 
 
 def _wrap_text(c, text, font, size, max_width):
-    """Word-wrap text into lines fitting max_width."""
     words = text.replace("\n", " \n ").split(" ")
     line, lines = "", []
     for w in words:
@@ -392,14 +411,17 @@ def _wrap_text(c, text, font, size, max_width):
         if c.stringWidth(test, font, size) < max_width:
             line = test
         else:
-            lines.append(line); line = w
+            # Fix #7: hard-break single words that exceed max_width
+            if not line and c.stringWidth(w, font, size) >= max_width:
+                lines.append(w); line = ""
+            else:
+                lines.append(line); line = w
     if line:
         lines.append(line)
     return lines
 
 
 def _page_header(c, title, subtitle, width, height, margin):
-    """Consistent navy banner header for interior pages."""
     c.setFillColor(C_PRIMARY)
     c.rect(0, height - 52, width, 52, fill=1, stroke=0)
     c.setFillColor(C_WHITE)
@@ -409,24 +431,24 @@ def _page_header(c, title, subtitle, width, height, margin):
     c.drawString(margin, height - 46, subtitle)
     c.setFillColor(C_ACCENT)
     c.rect(0, height - 58, width, 6, fill=1, stroke=0)
-    c.setFillColor(colors.black)  # reset
+    c.setFillColor(colors.black)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PDF Report Generator
+# PDF Report
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
+def generate_pdf_report(profile: PatientProfile, optimal_policy: dict,
+                        V_star: dict, diagram_path: str | None) -> io.BytesIO:
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
-    margin = 55
-    tw = width - 2 * margin
+    margin   = 55
+    tw       = width - 2 * margin
     page_num = 1
 
     # ── PAGE 1 : COVER ───────────────────────────────────────────────────────
     _new_page(c, width, height)
 
-    # Navy banner
     c.setFillColor(C_PRIMARY)
     c.rect(0, height - 110, width, 110, fill=1, stroke=0)
     c.setFillColor(C_WHITE)
@@ -436,22 +458,20 @@ def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
     c.drawString(margin, height - 74, "Optimal Treatment Plan  ·  MDP Policy Report")
     c.setFont("Helvetica", 9)
     c.setFillColor(colors.HexColor("#AED6F1"))
-    c.drawRightString(width - margin, height - 88, f"Generated: {date.today().strftime('%B %d, %Y')}")
-
-    # Accent stripe
+    c.drawRightString(width - margin, height - 88,
+                      f"Generated: {date.today().strftime('%B %d, %Y')}")
     c.setFillColor(C_ACCENT)
     c.rect(0, height - 116, width, 6, fill=1, stroke=0)
 
     y = height - 150
 
-    # Patient Profile Card
+    # Patient profile card
     card_h = 130
     c.setFillColor(C_BG)
     c.roundRect(margin, y - card_h, tw, card_h, 8, fill=1, stroke=0)
     c.setStrokeColor(C_ACCENT)
     c.setLineWidth(1)
     c.roundRect(margin, y - card_h, tw, card_h, 8, fill=0, stroke=1)
-    # Left accent bar
     c.setFillColor(C_ACCENT)
     c.rect(margin, y - card_h, 5, card_h, fill=1, stroke=0)
 
@@ -461,14 +481,13 @@ def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
     c.drawString(margin + 18, cy, "PATIENT PROFILE")
     cy -= 20
 
-    fields = [
+    for label, value in [
         ("Current Health State", profile.health),
         ("Age Group",            profile.age),
         ("Comorbidity Level",    profile.comorbidity),
         ("Recommended Action",   optimal_policy[profile.health].replace("_", " ")),
         ("Expected Value (V*)",  f"{V_star[profile.health]:.2f}"),
-    ]
-    for label, value in fields:
+    ]:
         c.setFont("Helvetica", 9)
         c.setFillColor(C_MUTED)
         c.drawString(margin + 18, cy, label)
@@ -479,7 +498,7 @@ def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
 
     y -= card_h + 25
 
-    # Disclaimer box
+    # Disclaimer
     c.setFillColor(colors.HexColor("#FFFDF0"))
     c.setStrokeColor(C_WARNING)
     c.setLineWidth(1.5)
@@ -494,49 +513,51 @@ def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
         "and must not be used for clinical decision-making.")
     y -= 60
 
-    # Section 1: Purpose
+    # Section 1
     y = _section_header(c, "1.  Purpose & Methodology", y, width, margin)
     body = (
         "This report presents the output of a Markov Decision Process (MDP) optimisation engine "
         "applied to patient treatment planning under uncertainty. The system models health state "
         "transitions, treatment costs, and clinical risk to derive a personalised, long-term optimal "
-        "treatment policy via Policy Iteration with a discount factor γ = 0.90.\n"
+        "treatment policy via Policy Iteration with a discount factor γ = 0.95.\n"
         "Transition probabilities are adjusted dynamically for the patient's age group and comorbidity "
-        "level, ensuring recommendations reflect individual clinical context."
+        "level. The penalty correctly targets the most desirable outcome state (including Recovery), "
+        "ensuring that high-risk patients realistically face reduced recovery probabilities."
     )
     c.setFont("Helvetica", 10)
     c.setFillColor(colors.black)
     for line in _wrap_text(c, body, "Helvetica", 10, tw):
-        c.drawString(margin, y, line)
-        y -= 14
+        c.drawString(margin, y, line); y -= 14
     y -= 10
 
-    # Section 2: Model Components table
+    # Section 2
     y = _section_header(c, "2.  Model Components", y, width, margin)
     table_data = [
         ["Health States",       ", ".join(health_states)],
         ["Actions Available",   ", ".join(a.replace("_", " ") for a in actions)],
         ["Terminal States",     "Recovered, Deceased"],
-        ["Discount Factor (γ)", "0.90"],
-        ["Algorithm",           "Policy Iteration (convergence δ < 1×10⁻⁶)"],
+        ["Discount Factor (γ)", "0.95"],
+        ["Algorithm",           "Policy Iteration (convergence δ < 1×10⁻⁸)"],
+        ["No-Treatment Penalty","Removed — progression risk captured in transitions only"],
+        ["Terminal Rewards",    "One-time health reward only (no treatment cost applied)"],
     ]
-    tbl = Table(table_data, colWidths=[160, tw - 160])
+    tbl = Table(table_data, colWidths=[175, tw - 175])
     tbl.setStyle(TableStyle([
-        ("BACKGROUND",      (0, 0), (0, -1),  C_LIGHT),
-        ("TEXTCOLOR",       (0, 0), (0, -1),  C_PRIMARY),
-        ("FONTNAME",        (0, 0), (0, -1),  "Helvetica-Bold"),
-        ("FONTNAME",        (1, 0), (-1, -1), "Helvetica"),
-        ("FONTSIZE",        (0, 0), (-1, -1), 9),
-        ("ROWBACKGROUNDS",  (0, 0), (-1, -1), [C_WHITE, C_BG]),
-        ("GRID",            (0, 0), (-1, -1), 0.4, C_MUTED),
-        ("VALIGN",          (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING",      (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING",   (0, 0), (-1, -1), 5),
-        ("LEFTPADDING",     (0, 0), (-1, -1), 8),
+        ("BACKGROUND",     (0, 0), (0, -1),  C_LIGHT),
+        ("TEXTCOLOR",      (0, 0), (0, -1),  C_PRIMARY),
+        ("FONTNAME",       (0, 0), (0, -1),  "Helvetica-Bold"),
+        ("FONTNAME",       (1, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE",       (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [C_WHITE, C_BG]),
+        ("GRID",           (0, 0), (-1, -1), 0.4, C_MUTED),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",     (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
     ]))
-    tbl_w, tbl_h = tbl.wrapOn(c, tw, 300)
-    tbl.drawOn(c, margin, y - tbl_h)
-    y -= tbl_h + 15
+    tw2, th = tbl.wrapOn(c, tw, 300)
+    tbl.drawOn(c, margin, y - th)
+    y -= th + 15
 
     _draw_footer(c, page_num, width, margin)
     c.showPage(); page_num += 1
@@ -552,29 +573,31 @@ def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
 
     pol_data = [["Health State", "Recommended Action", "Expected Value (V*)"]]
     for state in health_states:
-        act = optimal_policy[state]
-        pol_data.append([state, act.replace("_", " "), f"{V_star[state]:.2f}"])
+        pol_data.append([
+            state,
+            optimal_policy[state].replace("_", " "),
+            f"{V_star[state]:.2f}"
+        ])
 
     pol_tbl = Table(pol_data, colWidths=[150, 200, 150])
     pol_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, 0),  C_PRIMARY),
-        ("TEXTCOLOR",     (0, 0), (-1, 0),  C_WHITE),
-        ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE",      (0, 0), (-1, -1), 10),
-        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [C_WHITE, C_BG]),
-        ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#BDC3C7")),
-        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING",    (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 10),
-        ("ALIGN",         (2, 0), (-1, -1), "CENTER"),
+        ("BACKGROUND",     (0, 0), (-1, 0),  C_PRIMARY),
+        ("TEXTCOLOR",      (0, 0), (-1, 0),  C_WHITE),
+        ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTNAME",       (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE",       (0, 0), (-1, -1), 10),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_WHITE, C_BG]),
+        ("GRID",           (0, 0), (-1, -1), 0.4, colors.HexColor("#BDC3C7")),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",     (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 7),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 10),
+        ("ALIGN",          (2, 0), (-1, -1), "CENTER"),
     ]))
-    # Row + value colors
     for i, state in enumerate(health_states, 1):
         act = optimal_policy[state]
-        bg  = action_row_colors.get(act, C_WHITE)
         v   = V_star[state]
+        bg  = action_row_colors.get(act, C_WHITE)
         vc  = C_SUCCESS if v > 5 else (C_WARNING if v > 0 else C_DANGER)
         pol_tbl.setStyle(TableStyle([
             ("BACKGROUND", (0, i), (-1, i), bg),
@@ -586,26 +609,28 @@ def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
     pol_tbl.drawOn(c, margin, y - ph)
     y -= ph + 16
 
-    # Legend badges
+    # Legend
     c.setFont("Helvetica-Bold", 9)
     c.setFillColor(C_PRIMARY)
     c.drawString(margin, y, "Action Legend:")
     lx = margin + 105
-    for act_label, col in [("No Treatment", C_WARNING), ("Medication", C_ACCENT), ("Surgery", C_SUCCESS)]:
+    for act_label, col in [
+        ("No Treatment", C_WARNING),
+        ("Medication",   C_ACCENT),
+        ("Surgery",      C_SUCCESS),
+    ]:
         lx = _badge(c, act_label, lx, y - 1, col)
     y -= 30
 
-    # Bar chart — Section 4
+    # Bar chart
     y -= 5
     y = _section_header(c, "4.  Expected Value Distribution (V*)", y, width, margin)
 
     bar_area_w = tw - 80
-    bar_h      = 16
-    bar_gap    = 8
-    max_v      = max(abs(v) for v in V_star.values()) or 1
-    zero_x     = margin + 80 + bar_area_w * 0.5
-
-    chart_top = y + bar_h  # track top for zero-line
+    bar_h, bar_gap = 16, 8
+    max_v  = max(abs(v) for v in V_star.values()) or 1
+    zero_x = margin + 80 + bar_area_w * 0.5
+    chart_top = y + bar_h
 
     for state in health_states:
         v     = V_star[state]
@@ -622,15 +647,13 @@ def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
 
         c.setFont("Helvetica-Bold", 8)
         c.setFillColor(C_PRIMARY)
-        lbl = f"{v:.1f}"
         if v >= 0:
-            c.drawString(bx + bar_w + 4, y + 4, lbl)
+            c.drawString(bx + bar_w + 4, y + 4, f"{v:.1f}")
         else:
-            c.drawRightString(bx - 4, y + 4, lbl)
+            c.drawRightString(bx - 4, y + 4, f"{v:.1f}")
 
         y -= bar_h + bar_gap
 
-    # Zero centre line
     c.setStrokeColor(C_MUTED)
     c.setLineWidth(0.8)
     c.line(zero_x, y, zero_x, chart_top)
@@ -645,10 +668,10 @@ def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
                      "Patient-specific transition probabilities after age & comorbidity adjustment",
                      width, height, margin)
         try:
-            img    = Image.open(diagram_path)
-            dw     = tw
-            dh     = dw * (img.size[1] / img.size[0])
-            img_y  = max(margin + 30, (height - 58 - dh) / 2)
+            img   = Image.open(diagram_path)
+            dw    = tw
+            dh    = dw * (img.size[1] / img.size[0])
+            img_y = max(margin + 30, (height - 58 - dh) / 2)
             c.drawImage(diagram_path, margin, img_y, width=dw, height=dh,
                         preserveAspectRatio=True)
         except Exception as e:
@@ -663,64 +686,64 @@ def generate_pdf_report(profile, optimal_policy, V_star, diagram_path):
     _page_header(c, "Appendix & Technical Notes", "", width, height, margin)
 
     y = height - 80
-
-    # Section 5: Reward Function
     y = _section_header(c, "5.  Reward Function", y, width, margin)
+
     reward_rows = [
-        ["Component",        "Description",                      "Values"],
-        ["Health Reward",    "Base reward per health state",      "Healthy:+8  Mild:+5  Moderate:+2  Severe:−3  Critical:−8  Recovered:+15  Deceased:−20"],
-        ["Treatment Cost",   "Cost subtracted per action",        "No Treatment: 0  |  Medication: −2  |  Surgery: −6"],
-        ["Risk Penalty",     "Risk charge per action",            "No Treatment: −1  |  Medication: −2  |  Surgery: −4"],
-        ["Surgery Risk Adj.","Extra penalty for age/comorbidity", "Elderly: −3  |  Severe Comorb: −3  |  Adult: −1  |  Moderate Comorb: −1"],
+        ["Component",        "Description",                       "Values"],
+        ["Health Reward",    "Base reward per state",              "Healthy:+8  Mild:+5  Moderate:+2  Severe:−3  Critical:−8  Recovered:+15  Deceased:−20"],
+        ["Treatment Cost",   "Cost per active treatment",          "No Treatment: 0  |  Medication: −2  |  Surgery: −6"],
+        ["Risk Penalty",     "Procedural risk per active action",  "No Treatment: 0  |  Medication: −2  |  Surgery: −4"],
+        ["Surgery Risk Adj.","Extra surgical penalty (profile)",   "Elderly: −3  |  Severe Comorb: −3  |  Adult: −1  |  Moderate Comorb: −1"],
+        ["Terminal Reward",  "Applied once, no treatment cost",    "Recovered: +15  |  Deceased: −20  (health reward only)"],
     ]
-    r_tbl = Table(reward_rows, colWidths=[110, 150, tw - 260])
+    r_tbl = Table(reward_rows, colWidths=[120, 155, tw - 275])
     r_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, 0),  C_PRIMARY),
-        ("TEXTCOLOR",     (0, 0), (-1, 0),  C_WHITE),
-        ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE",      (0, 0), (-1, -1), 8),
-        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [C_WHITE, C_BG]),
-        ("GRID",          (0, 0), (-1, -1), 0.4, C_MUTED),
-        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING",    (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+        ("BACKGROUND",     (0, 0), (-1, 0),  C_PRIMARY),
+        ("TEXTCOLOR",      (0, 0), (-1, 0),  C_WHITE),
+        ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTNAME",       (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE",       (0, 0), (-1, -1), 8),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_WHITE, C_BG]),
+        ("GRID",           (0, 0), (-1, -1), 0.4, C_MUTED),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",     (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
     ]))
     rw, rh = r_tbl.wrapOn(c, tw, 300)
     r_tbl.drawOn(c, margin, y - rh)
     y -= rh + 25
 
-    # Section 6: Patient Adjustments
     y = _section_header(c, "6.  Patient-Specific Adjustments", y, width, margin)
     adj_rows = [
-        ["Factor",        "Level",    "Deterioration Penalty Applied"],
-        ["Age",           "Young",    "None (baseline)"],
-        ["Age",           "Adult",    "+0.05 shift toward worse state"],
-        ["Age",           "Elderly",  "+0.12 shift toward worse state"],
-        ["Comorbidity",   "None",     "None (baseline)"],
-        ["Comorbidity",   "Moderate", "+0.06 shift toward worse state"],
-        ["Comorbidity",   "Severe",   "+0.14 shift toward worse state"],
+        ["Factor",       "Level",    "Effect"],
+        ["Age",          "Young",    "No adjustment (baseline)"],
+        ["Age",          "Adult",    "+0.05 probability shift from best to next-worse state"],
+        ["Age",          "Elderly",  "+0.12 probability shift from best to next-worse state"],
+        ["Comorbidity",  "None",     "No adjustment (baseline)"],
+        ["Comorbidity",  "Moderate", "+0.06 probability shift from best to next-worse state"],
+        ["Comorbidity",  "Severe",   "+0.14 probability shift from best to next-worse state"],
+        ["Penalty Target","All",     "Best outcome by STATE_VALUE (includes Recovered) — fixes critical-surgery underestimation"],
     ]
-    a_tbl = Table(adj_rows, colWidths=[100, 100, tw - 200])
+    a_tbl = Table(adj_rows, colWidths=[100, 90, tw - 190])
     a_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, 0),  C_ACCENT),
-        ("TEXTCOLOR",     (0, 0), (-1, 0),  C_WHITE),
-        ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE",      (0, 0), (-1, -1), 9),
-        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [C_WHITE, C_BG]),
-        ("GRID",          (0, 0), (-1, -1), 0.4, C_MUTED),
-        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING",    (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+        ("BACKGROUND",     (0, 0), (-1, 0),  C_ACCENT),
+        ("TEXTCOLOR",      (0, 0), (-1, 0),  C_WHITE),
+        ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTNAME",       (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE",       (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_WHITE, C_BG]),
+        ("GRID",           (0, 0), (-1, -1), 0.4, C_MUTED),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",     (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
     ]))
     aw, ah = a_tbl.wrapOn(c, tw, 300)
     a_tbl.drawOn(c, margin, y - ah)
     y -= ah + 30
 
-    # Final disclaimer box
+    # Final disclaimer
     c.setFillColor(colors.HexColor("#FDF2F2"))
     c.setStrokeColor(C_DANGER)
     c.setLineWidth(1.5)
@@ -779,9 +802,10 @@ with right:
         with st.expander("Why was this treatment chosen?", expanded=True):
             st.write(
                 f"The MDP was personalised for a **{age}** patient with **{comorb}** comorbidities. "
-                "Age and comorbidity shift transition probabilities toward worse outcomes and add "
-                "surgical risk penalties to the reward function. Policy iteration selects the action "
-                "that maximises long-term expected reward under these personalised conditions."
+                "Age and comorbidity shift transition probabilities away from the best possible outcome "
+                "(including Recovery), correctly penalising high-risk patients. "
+                "Terminal states use a one-time health reward with no treatment cost. "
+                "Policy iteration with γ=0.95 selects the action maximising long-term expected reward."
             )
 
         with st.expander("Full Optimal Policy (all states)"):
