@@ -1,27 +1,24 @@
 import streamlit as st
 import numpy as np
 import random
+from graphviz import Digraph
+import io
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# State, Action, Patient Profile
+# States, Actions, Patient Profile
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 health_states = [
     'Healthy', 'Mild', 'Moderate', 'Severe', 'Critical',
     'Recovered', 'Deceased'
 ]
-
 actions = ['No_Treatment', 'Medication', 'Surgery']
-
 age_groups = ['Young', 'Adult', 'Elderly']
 comorbidities = ['None', 'Moderate', 'Severe']
-
 terminal_states = ['Recovered', 'Deceased']
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Transition Model (Base)
+# Transition Model
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 P_base = {
     'Healthy': {
         'No_Treatment': {'Healthy': 0.8, 'Mild': 0.2},
@@ -49,44 +46,26 @@ P_base = {
         'Surgery': {'Severe': 0.4, 'Recovered': 0.4, 'Deceased': 0.2},
     },
 }
-
-# Terminal states
 for t in terminal_states:
     P_base[t] = {a: {t: 1.0} for a in actions}
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Reward Function (Decomposed)
+# Reward Function
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 health_reward = {
     'Healthy': 8, 'Mild': 5, 'Moderate': 2,
     'Severe': -3, 'Critical': -8,
     'Recovered': 15, 'Deceased': -20
 }
-
-treatment_cost = {
-    'No_Treatment': 0,
-    'Medication': -2,
-    'Surgery': -6
-}
-
-risk_penalty = {
-    'No_Treatment': -1,
-    'Medication': -2,
-    'Surgery': -4
-}
+treatment_cost = {'No_Treatment': 0, 'Medication': -2, 'Surgery': -6}
+risk_penalty = {'No_Treatment': -1, 'Medication': -2, 'Surgery': -4}
 
 def reward(state, action):
-    return (
-        health_reward[state]
-        + treatment_cost[action]
-        + risk_penalty[action]
-    )
+    return health_reward[state] + treatment_cost[action] + risk_penalty[action]
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Policy Iteration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 gamma = 0.9
 
 def policy_evaluation(policy):
@@ -130,7 +109,6 @@ optimal_policy, V_star = policy_iteration()
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Simulation
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 def simulate(start_state, steps=5):
     state = start_state
     history = []
@@ -147,9 +125,62 @@ def simulate(start_state, steps=5):
     return history
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Streamlit UI — PROFESSIONAL UX VERSION
+# MDP Diagram
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def create_mdp_diagram():
+    dot = Digraph(comment='Healthcare MDP', format='png')
+    for state in health_states:
+        dot.node(state)
+    for s in health_states:
+        for a in actions:
+            for s2, p in P_base[s][a].items():
+                if p > 0:
+                    dot.edge(s, s2, label=f"{a.replace('_',' ')} ({p:.1f})")
+    return dot
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Report Generation
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def generate_report(patient_profile, optimal_policy, V_star):
+    health, age, comorb = patient_profile
+    report = f"""
+# Healthcare Decision Support System - Executive Summary
+
+**Patient Profile:**  
+- Health State: {health}  
+- Age Group: {age}  
+- Comorbidity Level: {comorb}  
+
+**Purpose:**  
+This system uses a Markov Decision Process (MDP) to recommend optimal treatment plans under uncertainty, balancing health outcomes, treatment cost, and medical risk.
+
+**States & Actions:**  
+- Health States: Healthy, Mild, Moderate, Severe, Critical, Recovered, Deceased  
+- Actions: No Treatment, Medication, Surgery  
+
+**Reward Structure:**  
+- Health-based reward, treatment cost, and risk penalties are combined to calculate expected long-term reward.
+
+**Optimal Policy (Selected Treatment by State):**  
+"""
+    for state, action in optimal_policy.items():
+        report += f"- {state}: {action.replace('_',' ')} (Expected Value: {V_star[state]:.2f})\n"
+
+    report += """
+
+**MDP Simulation:**  
+The system can simulate patient trajectories probabilistically to show potential outcomes following the optimal policy.
+
+**Notes:**  
+- Terminal states: Recovered, Deceased  
+- The system is for academic simulation purposes and does NOT provide medical advice.
+
+"""
+    return report
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Streamlit UI
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 st.set_page_config(
     page_title="Healthcare Decision Support System",
     page_icon="🩺",
@@ -158,107 +189,65 @@ st.set_page_config(
 
 # Header
 st.markdown(
-    """
-    <h1 style='text-align:center;'>Healthcare Decision Support System</h1>
-    <p style='text-align:center; color: gray;'>
-    An MDP-based intelligent agent for treatment planning under uncertainty
-    </p>
-    """,
+    "<h1 style='text-align:center;'>Healthcare Decision Support System</h1>"
+    "<p style='text-align:center; color: gray;'>An MDP-based intelligent agent for treatment planning under uncertainty</p>",
     unsafe_allow_html=True
 )
-
 st.markdown("---")
-
-# Disclaimer (important for professor)
-st.info(
-    "This application is an academic decision-support simulation and "
-    "does NOT provide real medical advice."
-)
+st.info("This application is an academic simulation and does NOT provide medical advice.")
 
 # Layout
 left, right = st.columns([1.2, 2])
-
-# ────────────────
-# LEFT PANEL — INPUT
-# ────────────────
 with left:
     st.subheader("Patient Profile")
+    health = st.selectbox("Current Health Condition", health_states[:-2])
+    age = st.selectbox("Age Group", age_groups)
+    comorb = st.selectbox("Comorbidity Level", comorbidities)
+    generate = st.button("Generate Optimal Treatment Plan", use_container_width=True)
 
-    health = st.selectbox(
-        "Current Health Condition",
-        health_states[:-2]
-    )
-
-    age = st.selectbox(
-        "Age Group",
-        age_groups
-    )
-
-    comorb = st.selectbox(
-        "Comorbidity Level",
-        comorbidities
-    )
-
-    st.markdown("")
-
-    generate = st.button(
-        "Generate Optimal Treatment Plan",
-        use_container_width=True
-    )
-
-# ────────────────
-# RIGHT PANEL — OUTPUT
-# ────────────────
 with right:
     if generate:
         action = optimal_policy[health]
-
         st.subheader("Recommended Decision")
+        st.success(f"**Optimal Treatment:** {action.replace('_', ' ')}")
 
-        st.success(
-            f"**Optimal Treatment:** {action.replace('_', ' ')}"
-        )
-
-        # Metrics
         m1, m2, m3 = st.columns(3)
         m1.metric("Health State", health)
         m2.metric("Selected Action", action.replace("_", " "))
         m3.metric("Expected Value", f"{V_star[health]:.2f}")
 
         st.markdown("---")
-
-        # Explanation
         with st.expander("Why was this treatment chosen?", expanded=True):
             st.write(
-                """
-                The decision agent evaluates all possible treatment options
-                using a Markov Decision Process and selects the action that
-                maximizes **long-term expected reward**, considering:
-                """
+                "The decision agent evaluates all possible treatment options using a Markov Decision Process "
+                "and selects the action that maximizes **long-term expected reward**, considering probabilistic transitions, treatment costs, and risks."
             )
-            st.markdown(
-                """
-                - Probabilistic health transitions  
-                - Treatment cost and medical risk  
-                - Long-term recovery outcomes  
-                """
-            )
-
-        # Simulation
         with st.expander("Simulated Patient Trajectory (MDP Rollout)"):
             sim = simulate(health)
             for i, (s, a, s2) in enumerate(sim, 1):
-                st.markdown(
-                    f"""
-                    **Step {i}**  
-                    State: `{s}`  
-                    Action: `{a.replace('_',' ')}`  
-                    Outcome: `{s2}`
-                    """
-                )
+                st.markdown(f"**Step {i}**  \nState: `{s}`  \nAction: `{a.replace('_',' ')}`  \nOutcome: `{s2}`")
 
-# Footer
+        # ────────────── Download Executive Report ──────────────
+        report = generate_report((health, age, comorb), optimal_policy, V_star)
+        st.download_button(
+            label="Download Executive Report (Markdown)",
+            data=report.encode('utf-8'),
+            file_name="executive_report.md",
+            mime="text/markdown"
+        )
+
+        # ────────────── MDP Diagram ──────────────
+        md = create_mdp_diagram()
+        diagram_path = "/tmp/mdp_diagram"
+        md.render(diagram_path, view=False)
+        with open(diagram_path + ".png", "rb") as f:
+            st.download_button(
+                label="Download MDP Diagram",
+                data=f,
+                file_name="mdp_diagram.png",
+                mime="image/png"
+            )
+        st.image(diagram_path + ".png", caption="Healthcare MDP Flow Diagram")
+
 st.markdown("---")
-st.caption(
-    "Developed using Markov Decision Processes, Policy Iteration, and Streamlit"
-)
+st.caption("Developed using Markov Decision Processes, Policy Iteration, and Streamlit")
